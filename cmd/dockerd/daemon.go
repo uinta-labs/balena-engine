@@ -1,7 +1,6 @@
 package dockerd
 
 import (
-	"context"
 	"crypto/tls"
 	"fmt"
 	"os"
@@ -18,7 +17,6 @@ import (
 	"github.com/docker/docker/api/server/middleware"
 	"github.com/docker/docker/api/server/router"
 	"github.com/docker/docker/api/server/router/build"
-	checkpointrouter "github.com/docker/docker/api/server/router/checkpoint"
 	"github.com/docker/docker/api/server/router/container"
 	distributionrouter "github.com/docker/docker/api/server/router/distribution"
 	grpcrouter "github.com/docker/docker/api/server/router/grpc"
@@ -26,7 +24,6 @@ import (
 	"github.com/docker/docker/api/server/router/network"
 	pluginrouter "github.com/docker/docker/api/server/router/plugin"
 	sessionrouter "github.com/docker/docker/api/server/router/session"
-	swarmrouter "github.com/docker/docker/api/server/router/swarm"
 	systemrouter "github.com/docker/docker/api/server/router/system"
 	"github.com/docker/docker/api/server/router/volume"
 	buildkit "github.com/docker/docker/builder/builder-next"
@@ -34,7 +31,6 @@ import (
 	"github.com/docker/docker/builder/fscache"
 	"github.com/docker/docker/cli/debug"
 	"github.com/docker/docker/daemon"
-	"github.com/docker/docker/daemon/cluster"
 	"github.com/docker/docker/daemon/config"
 	"github.com/docker/docker/daemon/listeners"
 	"github.com/docker/docker/dockerversion"
@@ -51,7 +47,6 @@ import (
 	"github.com/docker/docker/rootless"
 	"github.com/docker/docker/runconfig"
 	"github.com/docker/go-connections/tlsconfig"
-	swarmapi "github.com/docker/swarmkit/api"
 	"github.com/moby/buildkit/session"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -218,16 +213,6 @@ func (cli *DaemonCli) start(opts *daemonOptions) (err error) {
 		}
 	}
 
-	c, err := createAndStartCluster(cli, d)
-	if err != nil {
-		logrus.Fatalf("Error starting cluster component: %v", err)
-	}
-
-	// Restart all autostart containers which has a swarm endpoint
-	// and is not yet running now that we have successfully
-	// initialized the cluster.
-	d.RestartSwarmContainers()
-
 	logrus.Info("Daemon has completed initialization")
 
 	cli.d = d
@@ -237,11 +222,8 @@ func (cli *DaemonCli) start(opts *daemonOptions) (err error) {
 		return err
 	}
 	routerOptions.api = cli.api
-	routerOptions.cluster = c
 
 	initRouter(routerOptions)
-
-	go d.ProcessClusterNotifications(ctx, c.GetWatchStream())
 
 	cli.setupConfigReloadTrap()
 
@@ -257,7 +239,6 @@ func (cli *DaemonCli) start(opts *daemonOptions) (err error) {
 	// Daemon is fully initialized and handling API traffic
 	// Wait for serve API to complete
 	errAPI := <-serveAPIWait
-	c.Cleanup()
 
 	shutdownDaemon(d)
 
@@ -280,7 +261,6 @@ type routerOptions struct {
 	buildkit       *buildkit.Builder
 	daemon         *daemon.Daemon
 	api            *apiserver.Server
-	cluster        *cluster.Cluster
 }
 
 func newRouterOptions(config *config.Config, d *daemon.Daemon) (routerOptions, error) {
@@ -493,14 +473,12 @@ func initRouter(opts routerOptions) {
 
 	routers := []router.Router{
 		// we need to add the checkpoint router before the container router or the DELETE gets masked
-		checkpointrouter.NewRouter(opts.daemon, decoder),
 		container.NewRouter(opts.daemon, decoder),
 		image.NewRouter(opts.daemon.ImageService()),
 		systemrouter.NewRouter(opts.daemon, opts.buildCache, opts.buildkit, opts.features),
 		volume.NewRouter(opts.daemon.VolumesService()),
 		build.NewRouter(opts.buildBackend, opts.daemon, opts.features),
 		sessionrouter.NewRouter(opts.sessionManager),
-		swarmrouter.NewRouter(opts.cluster),
 		pluginrouter.NewRouter(opts.daemon.PluginManager()),
 		distributionrouter.NewRouter(opts.daemon.ImageService()),
 	}
