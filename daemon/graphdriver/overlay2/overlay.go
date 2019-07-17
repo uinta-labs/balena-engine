@@ -359,8 +359,10 @@ func (d *Driver) Cleanup() error {
 // CreateReadWrite creates a layer that is writable for use as a container
 // file system.
 func (d *Driver) CreateReadWrite(id, parent string, opts *graphdriver.CreateOpts) error {
-	if opts != nil && len(opts.StorageOpt) != 0 && !projectQuotaSupported {
-		return fmt.Errorf("--storage-opt is supported only for overlay over xfs with 'pquota' mount option")
+	if opts != nil && len(opts.StorageOpt) != 0 {
+		if _, ok := opts.StorageOpt["size"]; ok && !projectQuotaSupported {
+			return fmt.Errorf("--storage-opt is supported only for overlay over xfs with 'pquota' mount option")
+		}
 	}
 
 	if opts == nil {
@@ -475,6 +477,14 @@ func (d *Driver) parseStorageOpt(storageOpt map[string]string, driver *Driver) e
 				return err
 			}
 			driver.options.quota.Size = uint64(size)
+
+		case "sync_diffs":
+			sync, err := strconv.ParseBool(val)
+			if err != nil {
+				return err
+			}
+			driver.options.syncDiffs = sync
+
 		default:
 			return fmt.Errorf("Unknown option %s", key)
 		}
